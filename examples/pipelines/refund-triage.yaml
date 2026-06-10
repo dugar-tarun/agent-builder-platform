@@ -1,0 +1,53 @@
+apiVersion: agents.v1
+kind: Agent
+metadata:
+  name: refund-triage
+  description: Demo refund triage pipeline.
+  owners: [ops]
+spec:
+  inputs:
+    schema:
+      type: object
+      required: [ticketId]
+      properties:
+        ticketId:
+          type: string
+  outputs:
+    schema:
+      type: object
+  nodes:
+    - id: classify
+      type: llm
+      config:
+        provider: mock
+        model: demo-model
+        userPrompt: "Ticket {{ inputs.ticketId }}"
+        mockResponse:
+          score: 0.7
+          decision: approve
+    - id: gate
+      type: control.switch
+      cases:
+        - when: "nodes.classify.output.output.score > 0.5"
+          to: cooldown
+        - default: true
+          to: deny
+    - id: cooldown
+      type: control.wait
+      config:
+        durationMs: 10
+      next: [approve]
+    - id: approve
+      type: transform
+      config:
+        engine: jsonata
+        expression: '{"ticketId":"{{ inputs.ticketId }}","decision":"approved"}'
+    - id: deny
+      type: transform
+      config:
+        engine: jsonata
+        expression: '{"ticketId":"{{ inputs.ticketId }}","decision":"denied"}'
+  edges:
+    - from: classify
+      to: gate
+  start: classify

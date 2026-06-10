@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":true,"required":["provider","model","userPrompt"],"properties":{"provider":{"type":"string"},"model":{"type":"string"},"temperature":{"type":"number"},"systemPrompt":{"type":"string"},"userPrompt":{"type":"string"},"responseFormat":{"type":"object"}}}

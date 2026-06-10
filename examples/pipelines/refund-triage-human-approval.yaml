@@ -1,0 +1,60 @@
+apiVersion: agents.v1
+kind: Agent
+metadata:
+  name: refund-triage-human-approval
+  description: Refund triage pipeline requiring human approval for high-confidence refunds.
+  owners: [ops]
+spec:
+  inputs:
+    schema:
+      type: object
+      required: [ticketId]
+      properties:
+        ticketId:
+          type: string
+  outputs:
+    schema:
+      type: object
+  nodes:
+    - id: classify
+      type: llm
+      config:
+        provider: mock
+        model: demo-model
+        userPrompt: "Classify ticket {{ inputs.ticketId }}"
+        mockResponse:
+          score: 0.9
+          decision: approve
+
+    - id: gate
+      type: control.switch
+      cases:
+        - when: "nodes.classify.output.output.score > 0.5"
+          to: awaitApproval
+        - default: true
+          to: deny
+
+    - id: awaitApproval
+      type: control.approval
+      config:
+        signalName: approval.refund
+        timeoutMs: 300000
+        instructions: "Approve or reject refund for this ticket."
+      next: [approve]
+
+    - id: approve
+      type: transform
+      config:
+        engine: jsonata
+        expression: '{"ticketId":"{{ inputs.ticketId }}","decision":"approved","approvedBy":"{{ nodes.awaitApproval.output.actor }}"}'
+
+    - id: deny
+      type: transform
+      config:
+        engine: jsonata
+        expression: '{"ticketId":"{{ inputs.ticketId }}","decision":"denied"}'
+
+  edges:
+    - from: classify
+      to: gate
+  start: classify
