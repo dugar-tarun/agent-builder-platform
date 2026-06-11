@@ -10,6 +10,30 @@ services:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d agent_builder_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  db-init:
+    image: postgres:15
+    container_name: agent-builder-platform-db-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: postgres
+    command: >
+      sh -c "
+      db_exists=$$(psql -h postgres -U postgres -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='agent_builder_platform'\") &&
+      if [ \"$$db_exists\" != \"1\" ]; then
+        psql -h postgres -U postgres -d postgres -v ON_ERROR_STOP=1 -c \"CREATE DATABASE agent_builder_platform\";
+      else
+        echo \"database agent_builder_platform already exists\";
+      fi
+      "
+    restart: "no"
 
   temporal:
     image: temporalio/auto-setup:1.27.2
@@ -36,6 +60,30 @@ services:
     ports:
       - "8088:8080"
 
+  temporal-namespace-init:
+    image: temporalio/auto-setup:1.27.2
+    container_name: agent-builder-platform-temporal-namespace-init
+    depends_on:
+      temporal:
+        condition: service_started
+    entrypoint: ["sh", "-c"]
+    command: >
+      attempt=0;
+      until tctl --address temporal:7233 --ns default namespace describe >/dev/null 2>&1; do
+        attempt=$$((attempt+1));
+        if [ $$attempt -ge 30 ]; then
+          echo "temporal frontend not ready after 60s";
+          exit 1;
+        fi;
+        sleep 2;
+      done;
+      if tctl --address temporal:7233 --ns agents namespace describe >/dev/null 2>&1; then
+        echo "namespace agents already exists";
+      else
+        tctl --address temporal:7233 --ns agents namespace register --rd 3;
+      fi
+    restart: "no"
+
   temporal-postgres:
     image: postgres:15
     container_name: agent-builder-platform-temporal-postgres
@@ -45,6 +93,11 @@ services:
       POSTGRES_PASSWORD: temporal
     volumes:
       - temporal_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
   minio:
     image: minio/minio:RELEASE.2025-02-28T09-55-16Z
@@ -58,6 +111,48 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
+
+  api:
+    image: golang:1.23
+    container_name: agent-builder-platform-api
+    working_dir: /workspace
+    command: sh -c "go run ./cmd/controlplane"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+      temporal:
+        condition: service_started
+      temporal-namespace-init:
+        condition: service_completed_successfully
+    environment:
+      CONTROLPLANE_ADDR: :8080
+      PG_DSN: postgres://postgres:postgres@postgres:5432/agent_builder_platform?sslmode=disable
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: agents
+      TEMPORAL_TASK_QUEUE: agent-builder-platform
+    ports:
+      - "8080:8080"
+    volumes:
+      - ..:/workspace
+
+  ui:
+    image: node:20
+    container_name: agent-builder-platform-ui
+    working_dir: /workspace
+    command: sh -c "npm --prefix web install && NODE_TLS_REJECT_UNAUTHORIZED=0 npm --prefix web run dev -- --hostname 0.0.0.0 --port 3000"
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      CONTROLPLANE_BASE_URL: http://api:8080
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      npm_config_strict_ssl: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ..:/workspace
 
 volumes:
   pg_data:
