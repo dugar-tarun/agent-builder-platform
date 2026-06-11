@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -40,12 +41,14 @@ func (s *Server) Handler() http.Handler {
 		r.Get("/agents", s.listAgents)
 		r.Post("/agents", s.createAgent)
 		r.Get("/agents/{name}", s.getAgent)
+		r.Put("/agents/{name}", s.updateAgent)
 		r.Post("/agents/{name}/versions", s.createVersion)
 		r.Get("/agents/{name}/versions", s.listVersions)
 		r.Get("/agents/{name}/versions/{id}", s.getVersion)
 		r.Put("/agents/{name}/versions/{id}", s.updateVersion)
 		r.Post("/versions/{id}:publish", s.publishVersion)
 		r.Post("/agents/{name}:rollback", s.rollbackAgent)
+		r.Get("/agents/{name}/runs", s.listRuns)
 		r.Post("/agents/{name}/runs", s.startRun)
 		r.Get("/runs/{id}", s.getRun)
 		r.Get("/runs/{id}/timeline", s.getTimeline)
@@ -110,6 +113,30 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 	out, err := s.registry.GetAgentByName(r.Context(), chi.URLParam(r, "name"))
+	if err != nil {
+		if errors.Is(err, pg.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "agent not found", nil)
+			return
+		}
+		writeInternal(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireActor(w, r); !ok {
+		return
+	}
+	var req struct {
+		Description string            `json:"description"`
+		Owners      []string          `json:"owners"`
+		Labels      map[string]string `json:"labels"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	out, err := s.registry.UpdateAgent(r.Context(), chi.URLParam(r, "name"), req.Description, req.Owners, req.Labels)
 	if err != nil {
 		if errors.Is(err, pg.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "agent not found", nil)
@@ -280,6 +307,11 @@ func (s *Server) rollbackAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
+	if s.temporal == nil {
+		writeInternal(w, errors.New("temporal client is not configured"))
+		return
+	}
+
 	actor, ok := requireActor(w, r)
 	if !ok {
 		return
@@ -290,7 +322,8 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Inputs json.RawMessage `json:"inputs"`
+		VersionID string          `json:"versionId"`
+		Inputs    json.RawMessage `json:"inputs"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -301,9 +334,23 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := chi.URLParam(r, "name")
-	run, err := s.store.StartRun(r.Context(), name, req.Inputs, idem, actor)
+	var selectedVersionID *uuid.UUID
+	if strings.TrimSpace(req.VersionID) != "" {
+		parsedVersionID, err := uuid.Parse(strings.TrimSpace(req.VersionID))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "invalid versionId", nil)
+			return
+		}
+		selectedVersionID = &parsedVersionID
+	}
+
+	run, err := s.store.StartRun(r.Context(), name, selectedVersionID, req.Inputs, idem, actor)
 	if err != nil {
 		if errors.Is(err, pg.ErrNotFound) {
+			if selectedVersionID != nil {
+				writeError(w, http.StatusNotFound, "NOT_FOUND", "agent or version not found", nil)
+				return
+			}
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "agent not found", nil)
 			return
 		}
@@ -315,7 +362,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.temporal != nil && run.Status == "queued" && run.InputBlobID != nil {
+	if run.InputBlobID != nil {
 		we, startErr := s.temporal.ExecuteWorkflow(r.Context(), client.StartWorkflowOptions{
 			ID:                    run.TemporalWorkflowID,
 			TaskQueue:             s.taskQueue,
@@ -327,8 +374,6 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			InputsBlobID: run.InputBlobID.String(),
 		})
 		if startErr == nil {
-			_ = s.store.MarkRunRunning(r.Context(), run.ID, we.GetRunID())
-			run.Status = "running"
 			run.TemporalRunID = we.GetRunID()
 		} else if _, duplicate := startErr.(*serviceerror.WorkflowExecutionAlreadyStarted); duplicate {
 			if existing, getErr := s.store.GetRunByWorkflowID(r.Context(), run.TemporalWorkflowID); getErr == nil {
@@ -339,9 +384,41 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := s.populateTemporalRunStatus(r.Context(), &run); err != nil {
+		writeInternal(w, err)
+		return
+	}
 
 	w.Header().Set("Location", "/v1/runs/"+run.ID.String())
 	writeJSON(w, http.StatusAccepted, map[string]any{"runId": run.ID, "versionId": run.VersionID, "temporalWorkflowId": run.TemporalWorkflowID, "status": run.Status})
+}
+
+func (s *Server) listRuns(w http.ResponseWriter, r *http.Request) {
+	limit := 25
+	rawLimit := strings.TrimSpace(r.URL.Query().Get("limit"))
+	if rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed <= 0 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "limit must be an integer between 1 and 200", nil)
+			return
+		}
+		limit = parsed
+	}
+
+	out, err := s.store.ListRunsForAgent(r.Context(), chi.URLParam(r, "name"), limit)
+	if err != nil {
+		if errors.Is(err, pg.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "agent not found", nil)
+			return
+		}
+		writeInternal(w, err)
+		return
+	}
+	if err := s.populateTemporalRunStatuses(r.Context(), out); err != nil {
+		writeInternal(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
@@ -356,6 +433,10 @@ func (s *Server) getRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "run not found", nil)
 			return
 		}
+		writeInternal(w, err)
+		return
+	}
+	if err := s.populateTemporalRunStatus(r.Context(), &out); err != nil {
 		writeInternal(w, err)
 		return
 	}
@@ -374,6 +455,60 @@ func (s *Server) getTimeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+}
+
+func (s *Server) populateTemporalRunStatuses(ctx context.Context, runs []pg.Run) error {
+	for i := range runs {
+		if err := s.populateTemporalRunStatus(ctx, &runs[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) populateTemporalRunStatus(ctx context.Context, run *pg.Run) error {
+	if s.temporal == nil {
+		return errors.New("temporal client is not configured")
+	}
+
+	describe, err := s.temporal.DescribeWorkflowExecution(ctx, run.TemporalWorkflowID, run.TemporalRunID)
+	if err != nil {
+		var notFound *serviceerror.NotFound
+		if errors.As(err, &notFound) {
+			run.Status = "queued"
+			return nil
+		}
+		return err
+	}
+
+	info := describe.GetWorkflowExecutionInfo()
+	if info == nil {
+		run.Status = "queued"
+		return nil
+	}
+
+	run.Status = mapTemporalWorkflowStatus(info.GetStatus())
+	if execution := info.GetExecution(); execution != nil && execution.GetRunId() != "" {
+		run.TemporalRunID = execution.GetRunId()
+	}
+	return nil
+}
+
+func mapTemporalWorkflowStatus(status enumspb.WorkflowExecutionStatus) string {
+	switch status {
+	case enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, enumspb.WORKFLOW_EXECUTION_STATUS_CONTINUED_AS_NEW:
+		return "running"
+	case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
+		return "succeeded"
+	case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
+		return "failed"
+	case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED, enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED:
+		return "cancelled"
+	case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+		return "timed_out"
+	default:
+		return "queued"
+	}
 }
 
 func requireActor(w http.ResponseWriter, r *http.Request) (string, bool) {

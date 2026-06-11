@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+:root {
+  --background: #09090b;
+  --foreground: #f4f4f5;
+  --muted: #a1a1aa;
+  --panel: #18181b;
+  --border: #27272a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-panel: var(--panel);
+  --color-border: var(--border);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+* {
+  border-color: var(--border);
+}
+
+.react-flow__node-default {
+  border: 1px solid #3f3f46;
+  background: #18181b;
+  color: #fafafa;
+  border-radius: 10px;
+  font-size: 12px;
+  padding: 10px;
+  width: 180px;
+  white-space: pre-line;
+}
+
+.react-flow__edge-path {
+  stroke: #71717a;
+}
+
+.react-flow__controls-button {
+  background: #18181b;
+  border-color: #3f3f46;
+  color: #fafafa;
+}
+
+.btn-interactive {
+  cursor: pointer;
+  transition:
+    transform 140ms ease,
+    box-shadow 180ms ease,
+    filter 180ms ease,
+    border-color 180ms ease;
+}
+
+.btn-interactive:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+}
+
+.btn-interactive:active {
+  transform: translateY(0) scale(0.99);
+}
+
+.btn-interactive:disabled {
+  cursor: not-allowed;
+  transform: none;
+  filter: none;
+  box-shadow: none;
+  opacity: 0.58;
+}
