@@ -27,7 +27,7 @@ export function AppShell({ title, description, children, fullWidth = false }: Ap
           )}
         >
           <div className="flex items-center gap-3">
-            <Link href="/agents" className="text-sm font-medium text-zinc-200 hover:text-zinc-100">
+            <Link href="/agents" className="text-sm font-semibold tracking-tight text-zinc-200 hover:text-zinc-100">
               Agent Builder Platform
             </Link>
           </div>
@@ -45,7 +45,7 @@ export function AppShell({ title, description, children, fullWidth = false }: Ap
           <input
             aria-label="Actor"
             readOnly
-            className="w-56 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-300 outline-none"
+            className="w-56 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-xs tracking-wide text-zinc-300 outline-none"
             value={actor}
           />
         </div>
@@ -53,8 +53,8 @@ export function AppShell({ title, description, children, fullWidth = false }: Ap
 
       <main className={cn("w-full py-6", fullWidth ? "px-4 md:px-6" : "mx-auto max-w-7xl px-6")}>
         <div className="mb-6">
-          <h1 className="text-xl font-semibold text-zinc-100">{title}</h1>
-          {description ? <p className="mt-1 text-sm text-zinc-400">{description}</p> : null}
+          <h1 className="text-[1.35rem] font-semibold leading-7 tracking-tight text-zinc-100">{title}</h1>
+          {description ? <p className="mt-1 text-sm leading-6 text-zinc-400">{description}</p> : null}
         </div>
         {children}
       </main>
