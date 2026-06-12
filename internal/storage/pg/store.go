@@ -189,6 +189,31 @@ func (s *Store) GetAgentByName(ctx context.Context, name string) (registry.Agent
 	return a, nil
 }
 
+func (s *Store) UpdateAgent(ctx context.Context, name, description string, owners []string, labels map[string]string) (registry.Agent, error) {
+	ownersJSON, _ := json.Marshal(owners)
+	labelsJSON, _ := json.Marshal(labels)
+
+	var a registry.Agent
+	var outOwnersJSON []byte
+	var outLabelsJSON []byte
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE agents
+		   SET description = $2, owners = $3::jsonb, labels = $4::jsonb
+		 WHERE name = $1
+		RETURNING id, name, description, active_version_id, owners, labels, created_at`,
+		name, description, ownersJSON, labelsJSON,
+	).Scan(&a.ID, &a.Name, &a.Description, &a.ActiveVersionID, &outOwnersJSON, &outLabelsJSON, &a.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return registry.Agent{}, ErrNotFound
+		}
+		return registry.Agent{}, err
+	}
+	_ = json.Unmarshal(outOwnersJSON, &a.Owners)
+	_ = json.Unmarshal(outLabelsJSON, &a.Labels)
+	return a, nil
+}
+
 func (s *Store) CreateVersion(ctx context.Context, in registry.Version) (registry.Version, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -420,6 +445,7 @@ func (s *Store) Rollback(ctx context.Context, agentID uuid.UUID, toVersionID uui
 
 type Run struct {
 	ID                 uuid.UUID       `json:"id"`
+	AgentName          string          `json:"agentName,omitempty"`
 	AgentID            uuid.UUID       `json:"agentId"`
 	VersionID          uuid.UUID       `json:"versionId"`
 	TemporalWorkflowID string          `json:"temporalWorkflowId"`
@@ -444,13 +470,27 @@ type Event struct {
 	Meta      json.RawMessage `json:"meta,omitempty"`
 }
 
-func (s *Store) StartRun(ctx context.Context, agentName string, inputs json.RawMessage, idempotencyKey, actor string) (Run, error) {
+func (s *Store) StartRun(ctx context.Context, agentName string, selectedVersionID *uuid.UUID, inputs json.RawMessage, idempotencyKey, actor string) (Run, error) {
 	agent, err := s.GetAgentByName(ctx, agentName)
 	if err != nil {
 		return Run{}, err
 	}
-	if agent.ActiveVersionID == nil {
-		return Run{}, ErrNoActiveVersion
+
+	versionID := uuid.Nil
+	if selectedVersionID != nil {
+		version, err := s.GetVersionByAgentAndID(ctx, agent.ID, *selectedVersionID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return Run{}, ErrNotFound
+			}
+			return Run{}, err
+		}
+		versionID = version.ID
+	} else {
+		if agent.ActiveVersionID == nil {
+			return Run{}, ErrNoActiveVersion
+		}
+		versionID = *agent.ActiveVersionID
 	}
 
 	workflowID := buildWorkflowID(agentName, idempotencyKey)
@@ -461,8 +501,9 @@ func (s *Store) StartRun(ctx context.Context, agentName string, inputs json.RawM
 
 	run := Run{
 		ID:                 uuid.New(),
+		AgentName:          agentName,
 		AgentID:            agent.ID,
-		VersionID:          *agent.ActiveVersionID,
+		VersionID:          versionID,
 		TemporalWorkflowID: workflowID,
 		Status:             "queued",
 		TriggeredBy:        actor,
@@ -496,28 +537,66 @@ func (s *Store) StartRun(ctx context.Context, agentName string, inputs json.RawM
 func (s *Store) MarkRunRunning(ctx context.Context, runID uuid.UUID, temporalRunID string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE agent_runs
-		   SET status = 'running', temporal_run_id = $2
+		   SET temporal_run_id = $2
 		 WHERE id = $1`, runID, temporalRunID)
 	return err
 }
 
 func (s *Store) GetRun(ctx context.Context, runID uuid.UUID) (Run, error) {
 	return scanRun(s.db.QueryRowContext(ctx, `
-		SELECT id, agent_id, version_id, temporal_workflow_id, temporal_run_id, status, input_blob_id, output_blob_id, error, started_at, ended_at, triggered_by
-		FROM agent_runs
-		WHERE id = $1`, runID))
+		SELECT r.id, a.name, r.agent_id, r.version_id, r.temporal_workflow_id, r.temporal_run_id, r.status, r.input_blob_id, r.output_blob_id, r.error, r.started_at, r.ended_at, r.triggered_by
+		FROM agent_runs r
+		JOIN agents a ON a.id = r.agent_id
+		WHERE r.id = $1`, runID))
+}
+
+func (s *Store) ListRunsForAgent(ctx context.Context, agentName string, limit int) ([]Run, error) {
+	agent, err := s.GetAgentByName(ctx, agentName)
+	if err != nil {
+		return nil, err
+	}
+
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT r.id, a.name, r.agent_id, r.version_id, r.temporal_workflow_id, r.temporal_run_id, r.status, r.input_blob_id, r.output_blob_id, r.error, r.started_at, r.ended_at, r.triggered_by
+		FROM agent_runs r
+		JOIN agents a ON a.id = r.agent_id
+		WHERE r.agent_id = $1
+		ORDER BY r.started_at DESC
+		LIMIT $2`, agent.ID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]Run, 0, limit)
+	for rows.Next() {
+		run, err := scanRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, run)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) GetRunByWorkflowID(ctx context.Context, workflowID string) (Run, error) {
 	return scanRun(s.db.QueryRowContext(ctx, `
-		SELECT id, agent_id, version_id, temporal_workflow_id, temporal_run_id, status, input_blob_id, output_blob_id, error, started_at, ended_at, triggered_by
-		FROM agent_runs
-		WHERE temporal_workflow_id = $1
-		ORDER BY started_at DESC
+		SELECT r.id, a.name, r.agent_id, r.version_id, r.temporal_workflow_id, r.temporal_run_id, r.status, r.input_blob_id, r.output_blob_id, r.error, r.started_at, r.ended_at, r.triggered_by
+		FROM agent_runs r
+		JOIN agents a ON a.id = r.agent_id
+		WHERE r.temporal_workflow_id = $1
+		ORDER BY r.started_at DESC
 		LIMIT 1`, workflowID))
 }
 
-func (s *Store) CompleteRun(ctx context.Context, runID uuid.UUID, status string, output json.RawMessage, runErr json.RawMessage) error {
+func (s *Store) CompleteRun(ctx context.Context, runID uuid.UUID, _ string, output json.RawMessage, runErr json.RawMessage) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -535,8 +614,8 @@ func (s *Store) CompleteRun(ctx context.Context, runID uuid.UUID, status string,
 
 	_, err = tx.ExecContext(ctx, `
 		UPDATE agent_runs
-		   SET status = $2, output_blob_id = $3, error = $4, ended_at = now()
-		 WHERE id = $1`, runID, status, outputBlobID, runErr)
+		   SET output_blob_id = $2, error = $3, ended_at = now()
+		 WHERE id = $1`, runID, outputBlobID, runErr)
 	if err != nil {
 		return err
 	}
@@ -682,6 +761,7 @@ func scanRun(row scanner) (Run, error) {
 	var errBytes []byte
 	err := row.Scan(
 		&r.ID,
+		&r.AgentName,
 		&r.AgentID,
 		&r.VersionID,
 		&r.TemporalWorkflowID,

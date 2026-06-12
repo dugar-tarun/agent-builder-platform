@@ -16,6 +16,7 @@ type Store interface {
 	CreateAgent(ctx context.Context, agent Agent) (Agent, error)
 	ListAgents(ctx context.Context) ([]Agent, error)
 	GetAgentByName(ctx context.Context, name string) (Agent, error)
+	UpdateAgent(ctx context.Context, name, description string, owners []string, labels map[string]string) (Agent, error)
 
 	CreateVersion(ctx context.Context, version Version) (Version, error)
 	UpdateDraftVersion(ctx context.Context, versionID uuid.UUID, rawYAML string, compiledGraph []byte, compiledHash []byte) (Version, error)
@@ -88,6 +89,10 @@ func (s *Service) ListAgents(ctx context.Context) ([]Agent, error) {
 
 func (s *Service) GetAgentByName(ctx context.Context, name string) (Agent, error) {
 	return s.store.GetAgentByName(ctx, name)
+}
+
+func (s *Service) UpdateAgent(ctx context.Context, name, description string, owners []string, labels map[string]string) (Agent, error) {
+	return s.store.UpdateAgent(ctx, name, description, owners, labels)
 }
 
 func (s *Service) CreateVersion(ctx context.Context, agentName string, rawYAML []byte, actor string) (Version, error) {

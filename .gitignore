@@ -1,4 +1,53 @@
-.env
+# Unified .gitignore for the agent-builder-platform (Go services + Next.js web/)
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# ---- OS ----
 .DS_Store
+
+# ---- Env / secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+
+# ---- Editors / IDEs ----
+.idea/
+.vscode/
+*.swp
+
+# ---- Go (cmd/controlplane, cmd/worker, internal/...) ----
 bin/
 docs/
+*.exe
+*.test
+*.out
+coverage.out
+
+# ---- Logs / debug ----
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ---- Web: dependencies (web/) ----
+web/node_modules/
+web/.pnp
+web/.pnp.*
+web/.yarn/*
+!web/.yarn/patches
+!web/.yarn/plugins
+!web/.yarn/releases
+!web/.yarn/versions
+
+# ---- Web: testing ----
+web/coverage/
+
+# ---- Web: Next.js build output ----
+web/.next/
+web/out/
+web/build/
+
+# ---- Web: misc ----
+web/.vercel
+web/*.tsbuildinfo
+web/next-env.d.ts

@@ -1,3 +1,3 @@
 # Agent Builder Platform
 
-Build durable agents!
+Define, version, run, and operate a durable agent with minimal engineering effort.

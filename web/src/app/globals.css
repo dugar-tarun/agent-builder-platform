@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0b0d10;
+  --foreground: #e8edf5;
+  --muted: #9aa6b2;
+  --panel: #11151b;
+  --panel-elevated: #161b22;
+  --border: #252b36;
+  --ring: #4f7cff;
+
+  /* Override zinc scale to keep existing classes but improve palette. */
+  --color-zinc-950: #0b0d10;
+  --color-zinc-900: #11151b;
+  --color-zinc-800: #161b22;
+  --color-zinc-700: #252b36;
+  --color-zinc-600: #344054;
+  --color-zinc-500: #667085;
+  --color-zinc-400: #98a2b3;
+  --color-zinc-300: #c7d0dc;
+  --color-zinc-200: #d7deea;
+  --color-zinc-100: #e8edf5;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-panel: var(--panel);
+  --color-panel-elevated: var(--panel-elevated);
+  --color-border: var(--border);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter), Arial, Helvetica, sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  border-color: var(--border);
+}
+
+.react-flow__node-default {
+  border: 1px solid #252b36;
+  background: #161b22;
+  color: #e8edf5;
+  border-radius: 10px;
+  font-size: 12px;
+  padding: 10px;
+  width: 180px;
+  white-space: pre-line;
+}
+
+.react-flow__edge-path {
+  stroke: #667085;
+}
+
+.react-flow__controls-button {
+  background: #161b22;
+  border-color: #252b36;
+  color: #d7deea;
+}
+
+.react-flow__controls-button:hover {
+  background: #1c232d;
+}
+
+.react-flow__controls-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.btn-interactive {
+  cursor: pointer;
+  transition:
+    transform 140ms ease,
+    box-shadow 180ms ease,
+    filter 180ms ease,
+    border-color 180ms ease,
+    background-color 180ms ease;
+}
+
+.btn-interactive:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.03);
+  box-shadow: 0 8px 20px rgba(2, 6, 23, 0.34);
+}
+
+.btn-interactive:active {
+  transform: translateY(0) scale(0.99);
+}
+
+.btn-interactive:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.btn-interactive:disabled {
+  cursor: not-allowed;
+  transform: none;
+  filter: none;
+  box-shadow: none;
+  opacity: 0.58;
+}
+
+input:not([type="checkbox"]),
+textarea,
+select {
+  font-size: 0.83rem;
+  letter-spacing: 0.01em;
+}
